@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ENQUIRY_STATUSES, PROJECT_CATEGORIES, PROJECT_STATUSES } from './constants.js';
+import { ENQUIRY_STATUSES, PROJECT_CATEGORIES, PROJECT_STATUSES, SERVICE_KEYS } from './constants.js';
 
 const blank = (v) => (v === '' || v === null ? undefined : v);
 const optStr = z.preprocess(blank, z.string().trim().max(2000).optional());
@@ -74,6 +74,7 @@ export const enquiryInput = z.object({
   projectType: optStr,
   message: z.preprocess(blank, z.string().trim().max(2000).optional()),
   source: optStr,
+  lang: z.enum(['en', 'hi']).optional(),
   website: z.string().max(0, 'Spam detected').optional(), // honeypot: must stay empty
 });
 
@@ -93,6 +94,9 @@ const whatsapp = z.preprocess(
 export const settingsInput = z.object({
   companyName: optStr,
   tagline: optStr,
+  aboutEn: z.preprocess(blank, z.string().trim().max(3000).optional()),
+  aboutHi: z.preprocess(blank, z.string().trim().max(3000).optional()),
+  services: z.array(z.enum(SERVICE_KEYS)).max(SERVICE_KEYS.length).default([]),
   logo: image.optional().nullable(),
   phone: optStr,
   whatsapp,

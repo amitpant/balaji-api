@@ -25,7 +25,11 @@ Tables are created automatically on the first request.
 | --- | --- |
 | Public | `GET /api/health`, `GET /api/projects`, `GET /api/projects/:slug`, `GET /api/testimonials`, `GET /api/settings`, `POST /api/enquiries` |
 | Auth | `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/password` |
-| Admin | projects CRUD, `POST /api/admin/uploads/sign`, testimonials CRUD, enquiries list + status, settings (incl. social links, Facebook Pixel ID) |
+| Admin | projects CRUD, `POST /api/admin/uploads/sign`, testimonials CRUD, enquiries list + status, settings (contact details, About text in English and Hindi, services offered, social links, Facebook Pixel ID) |
+
+## Enquiries
+
+`POST /api/enquiries` stores the visitor's language (`en`/`hi`). Limits: 5 per IP per hour, honeypot field `website`.
 
 ## First admin login
 

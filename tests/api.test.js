@@ -185,6 +185,14 @@ describe('settings and social media', () => {
     expect(pub.marketing.facebookPixelId).toBe('123456789012345');
   });
 
+  it('saves About text in both languages and the chosen services', async () => {
+    const res = await call('PUT', '/admin/settings', { aboutEn: 'We build homes.', aboutHi: 'हम घर बनाते हैं।', services: ['residential', 'interior'] });
+    expect(res.status).toBe(200);
+    const pub = (await call('GET', '/settings')).body;
+    expect(pub).toMatchObject({ aboutHi: 'हम घर बनाते हैं।', services: ['residential', 'interior'] });
+    expect((await call('PUT', '/admin/settings', { services: ['spaceships'] })).status).toBe(400);
+  });
+
   it('rejects a social link that is not a URL, and a bad Pixel ID', async () => {
     const res = await call('PUT', '/admin/settings', { social: { instagram: 'balaji_builders' }, marketing: { facebookPixelId: 'abc' } });
     expect(res.status).toBe(400);
