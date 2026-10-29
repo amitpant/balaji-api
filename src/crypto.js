@@ -36,6 +36,10 @@ export async function sha1Hex(text) {
 // Signed direct upload: the browser sends the photo straight to Cloudinary.
 // https://cloudinary.com/documentation/authentication_signatures
 export async function signCloudinaryUpload(env, folder) {
+  // Trim: a stray space or newline pasted into a secret breaks the signature.
+  const cloudName = env.CLOUDINARY_CLOUD_NAME.trim();
+  const apiKey = env.CLOUDINARY_API_KEY.trim();
+  const apiSecret = env.CLOUDINARY_API_SECRET.trim();
   const timestamp = Math.round(Date.now() / 1000);
   const params = { folder, timestamp };
   const toSign = Object.keys(params)
@@ -43,7 +47,7 @@ export async function signCloudinaryUpload(env, folder) {
     .map((k) => `${k}=${params[k]}`)
     .join('&');
   return {
-    uploadUrl: `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/upload`,
-    fields: { api_key: env.CLOUDINARY_API_KEY, timestamp, folder, signature: await sha1Hex(toSign + env.CLOUDINARY_API_SECRET) },
+    uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+    fields: { api_key: apiKey, timestamp, folder, signature: await sha1Hex(toSign + apiSecret) },
   };
 }

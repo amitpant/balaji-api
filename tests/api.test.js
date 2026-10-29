@@ -209,6 +209,15 @@ describe('uploads and password', () => {
     expect(res.body.fields.signature).toMatch(/^[a-f0-9]{40}$/);
   });
 
+  it('signs exactly like Cloudinary and ignores stray spaces in secrets', async () => {
+    const { signCloudinaryUpload, sha1Hex } = await import('../src/crypto.js');
+    const a = await signCloudinaryUpload({ CLOUDINARY_CLOUD_NAME: ' demo ', CLOUDINARY_API_KEY: 'key\n', CLOUDINARY_API_SECRET: ' secret\n' }, 'balaji/projects');
+    const { timestamp, signature } = a.fields;
+    expect(a.uploadUrl).toBe('https://api.cloudinary.com/v1_1/demo/image/upload');
+    expect(a.fields.api_key).toBe('key');
+    expect(signature).toBe(await sha1Hex(`folder=balaji/projects&timestamp=${timestamp}secret`));
+  });
+
   it('changes the password', async () => {
     expect((await call('POST', '/auth/password', { currentPassword: 'wrong', newPassword: 'new-password-1' })).status).toBe(400);
     expect((await call('POST', '/auth/password', { currentPassword: 'correct-horse', newPassword: 'new-password-1' })).status).toBe(204);
