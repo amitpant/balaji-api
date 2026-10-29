@@ -8,6 +8,8 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
+  // Keep variables set in the Cloudflare dashboard when a new commit deploys.
+  "keep_vars": true,
   "d1_databases": [
     {
       "binding": "DB",
