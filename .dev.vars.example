@@ -1,0 +1,9 @@
+# Copy to .dev.vars for `npm run dev`. In Cloudflare, add these under Settings > Variables and Secrets.
+JWT_SECRET=replace-with-a-random-string-of-at-least-32-characters
+CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
+# First login only: creates the owner account if none exists. Remove after the first login.
+ADMIN_NAME=Owner
+ADMIN_EMAIL=
+ADMIN_PASSWORD=

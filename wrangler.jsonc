@@ -1,0 +1,18 @@
+{
+  // Cloudflare Worker for the API. Cloudflare build settings:
+  //   Build command: (leave empty)   Deploy command: npx wrangler deploy
+  // Secrets (Settings > Variables and Secrets): JWT_SECRET, CLOUDINARY_CLOUD_NAME,
+  // CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET, ADMIN_EMAIL, ADMIN_PASSWORD.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "balaji-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "balaji"
+      // database_id is filled in automatically on first deploy (or add it from the D1 dashboard).
+    }
+  ]
+}

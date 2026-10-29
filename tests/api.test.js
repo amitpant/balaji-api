@@ -1,181 +1,221 @@
-// Route tests without a live database: Mongoose model methods are stubbed.
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import request from 'supertest';
-import bcrypt from 'bcryptjs';
+// End-to-end API tests against a real local D1 database (Wrangler's local Cloudflare runtime).
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { getPlatformProxy } from 'wrangler';
+import app from '../src/index.js';
 
-process.env.JWT_SECRET = 'test-secret-test-secret-test-secret-123';
-process.env.CLOUDINARY_CLOUD_NAME = 'demo';
-process.env.CLOUDINARY_API_KEY = 'key';
-process.env.CLOUDINARY_API_SECRET = 'secret';
-
-const { createApp } = await import('../src/app.js');
-const { Project } = await import('../src/models/Project.js');
-const { Enquiry } = await import('../src/models/Enquiry.js');
-const { AdminUser } = await import('../src/models/AdminUser.js');
-const { SiteSettings } = await import('../src/models/SiteSettings.js');
-
-// Chainable stand-in for a Mongoose Query that resolves to `result`.
-const q = (result) => {
-  const query = {};
-  for (const m of ['select', 'sort', 'skip', 'limit', 'lean']) query[m] = () => query;
-  query.then = (res, rej) => Promise.resolve(result).then(res, rej);
-  return query;
-};
-
-const app = createApp();
-const cover = { url: 'https://res.cloudinary.com/demo/image/upload/a.jpg', publicId: 'a' };
+let proxy;
+let env;
 let cookie;
 
-beforeAll(async () => {
-  const passwordHash = await bcrypt.hash('correct-horse', 4);
-  vi.spyOn(AdminUser, 'findOne').mockImplementation(({ email }) =>
-    q(email === 'owner@example.com' ? { _id: '507f1f77bcf86cd799439011', name: 'Owner', email, role: 'owner', passwordHash } : null),
+const call = async (method, path, json, headers = {}) => {
+  const res = await app.request(
+    `https://test.local/api${path}`,
+    {
+      method,
+      headers: { 'content-type': 'application/json', ...(cookie && { cookie }), ...headers },
+      body: json === undefined ? undefined : JSON.stringify(json),
+    },
+    env,
   );
-  const res = await request(app).post('/api/auth/login').send({ email: 'owner@example.com', password: 'correct-horse' });
-  cookie = res.headers['set-cookie'];
-});
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null, headers: res.headers };
+};
 
-afterEach(() => {
-  for (const spy of [Project, Enquiry, SiteSettings].flatMap((M) => Object.values(M))) {
-    if (vi.isMockFunction(spy)) spy.mockRestore();
-  }
-});
+const cover = { url: 'https://res.cloudinary.com/demo/image/upload/a.jpg', publicId: 'a' };
+
+beforeAll(async () => {
+  proxy = await getPlatformProxy({ persist: false });
+  env = {
+    ...proxy.env,
+    JWT_SECRET: 'test-secret-test-secret-test-secret-123',
+    ADMIN_EMAIL: 'Owner@Example.com',
+    ADMIN_PASSWORD: 'correct-horse',
+    CLOUDINARY_CLOUD_NAME: 'demo',
+    CLOUDINARY_API_KEY: 'key',
+    CLOUDINARY_API_SECRET: 'secret',
+  };
+}, 60_000);
+
+afterAll(() => proxy?.dispose());
 
 describe('auth', () => {
-  it('logs in with the right password and sets an httpOnly cookie', () => {
-    expect(cookie?.[0]).toMatch(/session=.+HttpOnly/);
+  it('blocks admin routes without a session', async () => {
+    expect((await call('GET', '/admin/projects')).status).toBe(401);
   });
 
   it('rejects a wrong password', async () => {
-    const res = await request(app).post('/api/auth/login').send({ email: 'owner@example.com', password: 'nope' });
+    const res = await call('POST', '/auth/login', { email: 'owner@example.com', password: 'nope' });
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('INVALID_LOGIN');
   });
 
-  it('protects admin routes', async () => {
-    const res = await request(app).get('/api/admin/projects');
-    expect(res.status).toBe(401);
+  it('creates the first owner from secrets and logs in with an httpOnly cookie', async () => {
+    const res = await call('POST', '/auth/login', { email: 'owner@example.com', password: 'correct-horse' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe('owner@example.com');
+    const setCookie = res.headers.get('set-cookie');
+    expect(setCookie).toMatch(/session=.+HttpOnly/);
+    expect(setCookie).toMatch(/Secure/);
+    cookie = setCookie.split(';')[0];
   });
 
   it('returns the current admin', async () => {
-    const res = await request(app).get('/api/auth/me').set('Cookie', cookie);
+    const res = await call('GET', '/auth/me');
     expect(res.status).toBe(200);
     expect(res.body.user.name).toBe('Owner');
   });
 });
 
-describe('public projects', () => {
-  it('only queries published projects', async () => {
-    const find = vi.spyOn(Project, 'find').mockReturnValue(q([{ title: 'A' }]));
-    vi.spyOn(Project, 'countDocuments').mockResolvedValue(1);
-    const res = await request(app).get('/api/projects?status=completed&category=bogus');
-    expect(res.status).toBe(200);
-    expect(find).toHaveBeenCalledWith({ published: true, status: 'completed' });
-    expect(res.body.total).toBe(1);
+describe('projects', () => {
+  let id;
+
+  it('requires title, category and status', async () => {
+    const res = await call('POST', '/admin/projects', {});
+    expect(res.status).toBe(400);
+    expect(Object.keys(res.body.error.fields)).toEqual(expect.arrayContaining(['title', 'category', 'status']));
   });
 
-  it('404s for unknown or unpublished slugs', async () => {
-    const findOne = vi.spyOn(Project, 'findOne').mockReturnValue(q(null));
-    const res = await request(app).get('/api/projects/secret');
-    expect(res.status).toBe(404);
-    expect(findOne).toHaveBeenCalledWith({ slug: 'secret', published: true });
+  it('will not publish a project without a photo', async () => {
+    const res = await call('POST', '/admin/projects', { title: 'House', category: 'residential', status: 'ongoing', published: true });
+    expect(res.status).toBe(400);
+    expect(res.body.error.fields.coverImage).toMatch(/photo/);
+  });
+
+  it('rejects a bad YouTube link', async () => {
+    const res = await call('POST', '/admin/projects', {
+      title: 'House',
+      category: 'residential',
+      status: 'ongoing',
+      videos: ['https://vimeo.com/1'],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.fields['videos.0']).toMatch(/YouTube/);
+  });
+
+  it('saves a draft; empty numbers stay empty and YouTube links become IDs', async () => {
+    const res = await call('POST', '/admin/projects', {
+      title: 'Family Home',
+      category: 'residential',
+      status: 'completed',
+      coverImage: cover,
+      plotAreaSqft: '',
+      builtUpAreaSqft: '3100',
+      videos: ['https://youtu.be/dQw4w9WgXcQ', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5'],
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.slug).toBe('family-home');
+    expect(res.body.published).toBe(false);
+    expect(res.body.plotAreaSqft).toBeUndefined();
+    expect(res.body.builtUpAreaSqft).toBe(3100);
+    expect(res.body.videos).toEqual(['dQw4w9WgXcQ', 'dQw4w9WgXcQ']);
+    id = res.body.id;
+  });
+
+  it('gives a second project with the same title a unique slug', async () => {
+    const res = await call('POST', '/admin/projects', { title: 'Family Home', category: 'residential', status: 'ongoing' });
+    expect(res.body.slug).toBe('family-home-2');
+  });
+
+  it('hides drafts from the public site', async () => {
+    expect((await call('GET', '/projects')).body.total).toBe(0);
+    expect((await call('GET', '/projects/family-home')).status).toBe(404);
+  });
+
+  it('shows a project once published, with filters', async () => {
+    const draft = (await call('GET', `/admin/projects/${id}`)).body;
+    const res = await call('PUT', `/admin/projects/${id}`, { ...draft, published: true, featured: true });
+    expect(res.status).toBe(200);
+    expect(res.body.createdAt).toBe(draft.createdAt);
+
+    const list = await call('GET', '/projects?status=completed&category=bogus');
+    expect(list.body.total).toBe(1);
+    expect(list.body.items[0]).toMatchObject({ slug: 'family-home', coverImage: cover });
+    expect(list.body.items[0].description).toBeUndefined(); // cards stay small
+    expect((await call('GET', '/projects?status=ongoing')).body.total).toBe(0);
+    expect((await call('GET', '/projects?featured=true')).body.total).toBe(1);
+    expect((await call('GET', '/projects/family-home')).body.builtUpAreaSqft).toBe(3100);
+  });
+
+  it('deletes a project', async () => {
+    expect((await call('DELETE', `/admin/projects/${id}`)).status).toBe(204);
+    expect((await call('DELETE', `/admin/projects/${id}`)).status).toBe(404);
   });
 });
 
 describe('enquiries', () => {
   it('validates the phone number', async () => {
-    const res = await request(app).post('/api/enquiries').send({ name: 'Ravi', phone: '12345' });
+    const res = await call('POST', '/enquiries', { name: 'Ravi', phone: '12345' });
     expect(res.status).toBe(400);
     expect(res.body.error.fields.phone).toMatch(/10-digit/);
   });
 
-  it('normalises +91 numbers and drops the honeypot field', async () => {
-    const create = vi.spyOn(Enquiry, 'create').mockResolvedValue({ _id: 'e1' });
-    const res = await request(app).post('/api/enquiries').send({ name: 'Ravi', phone: '+91 98765-43210', website: '' });
-    expect(res.status).toBe(201);
-    expect(create).toHaveBeenCalledWith({ name: 'Ravi', phone: '9876543210' });
-  });
-
   it('rejects bots that fill the honeypot', async () => {
-    const res = await request(app).post('/api/enquiries').send({ name: 'Bot', phone: '9876543210', website: 'x.com' });
-    expect(res.status).toBe(400);
+    expect((await call('POST', '/enquiries', { name: 'Bot', phone: '9876543210', website: 'x.com' })).status).toBe(400);
   });
-});
 
-describe('admin projects', () => {
-  it('creates a project with a unique slug and YouTube IDs', async () => {
-    vi.spyOn(Project, 'exists').mockImplementation(async ({ slug }) => slug === 'family-home');
-    const create = vi.spyOn(Project, 'create').mockImplementation(async (d) => d);
-    const res = await request(app)
-      .post('/api/admin/projects')
-      .set('Cookie', cookie)
-      .send({
-        title: 'Family Home',
-        category: 'residential',
-        status: 'completed',
-        coverImage: cover,
-        videos: ['https://youtu.be/dQw4w9WgXcQ', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5'],
-        plotAreaSqft: '',
-      });
+  it('saves an enquiry with a normalised number and lists it for the admin', async () => {
+    const res = await call('POST', '/enquiries', { name: 'Ravi', phone: '+91 98765-43210', website: '' }, { 'cf-connecting-ip': '1.1.1.1' });
     expect(res.status).toBe(201);
-    expect(res.body.slug).toBe('family-home-2');
-    expect(res.body.videos).toEqual(['dQw4w9WgXcQ', 'dQw4w9WgXcQ']);
-    expect(create.mock.calls[0][0].plotAreaSqft).toBeUndefined();
+    const inbox = await call('GET', '/admin/enquiries');
+    expect(inbox.body.newCount).toBe(1);
+    expect(inbox.body.items[0]).toMatchObject({ name: 'Ravi', phone: '9876543210', status: 'new' });
+    const upd = await call('PATCH', `/admin/enquiries/${res.body.id}`, { status: 'contacted' });
+    expect(upd.body.status).toBe('contacted');
   });
 
-  it('requires title, category, status and cover', async () => {
-    const res = await request(app).post('/api/admin/projects').set('Cookie', cookie).send({});
-    expect(res.status).toBe(400);
-    expect(Object.keys(res.body.error.fields)).toEqual(expect.arrayContaining(['title', 'category', 'status', 'coverImage']));
-  });
-
-  it('rejects a bad YouTube link', async () => {
-    const res = await request(app)
-      .post('/api/admin/projects')
-      .set('Cookie', cookie)
-      .send({ title: 'House', category: 'residential', status: 'ongoing', coverImage: cover, videos: ['https://vimeo.com/1'] });
-    expect(res.status).toBe(400);
-    expect(res.body.error.fields['videos.0']).toMatch(/YouTube/);
-  });
-
-  it('404s on an invalid id', async () => {
-    const res = await request(app).delete('/api/admin/projects/not-an-id').set('Cookie', cookie);
-    expect(res.status).toBe(404);
+  it('limits one visitor to 5 enquiries an hour', async () => {
+    const h = { 'cf-connecting-ip': '2.2.2.2' };
+    for (let i = 0; i < 5; i++) expect((await call('POST', '/enquiries', { name: 'Spam', phone: '9876543210' }, h)).status).toBe(201);
+    expect((await call('POST', '/enquiries', { name: 'Spam', phone: '9876543210' }, h)).status).toBe(429);
   });
 });
 
 describe('settings and social media', () => {
-  it('normalises WhatsApp and validates social links and Pixel ID', async () => {
-    const upsert = vi.spyOn(SiteSettings, 'findOneAndUpdate').mockImplementation((f, d) => q(d));
-    const res = await request(app)
-      .put('/api/admin/settings')
-      .set('Cookie', cookie)
-      .send({
-        whatsapp: '98765 43210',
-        social: { facebook: 'https://facebook.com/balaji', instagram: '' },
-        marketing: { facebookPixelId: '123456789012345' },
-      });
+  it('normalises WhatsApp and drops empty links', async () => {
+    const res = await call('PUT', '/admin/settings', {
+      phone: '+91 98765 43210',
+      whatsapp: '98765 43210',
+      social: { facebook: 'https://facebook.com/balaji', instagram: '' },
+      marketing: { facebookPixelId: '123456789012345' },
+    });
     expect(res.status).toBe(200);
-    expect(res.body.whatsapp).toBe('919876543210');
-    expect(res.body.social).toEqual({ facebook: 'https://facebook.com/balaji' });
-    expect(upsert).toHaveBeenCalledOnce();
+    const pub = (await call('GET', '/settings')).body;
+    expect(pub.whatsapp).toBe('919876543210');
+    expect(pub.social).toEqual({ facebook: 'https://facebook.com/balaji' });
+    expect(pub.marketing.facebookPixelId).toBe('123456789012345');
   });
 
-  it('rejects a social link that is not a URL', async () => {
-    const res = await request(app)
-      .put('/api/admin/settings')
-      .set('Cookie', cookie)
-      .send({ social: { instagram: 'balaji_builders' } });
+  it('rejects a social link that is not a URL, and a bad Pixel ID', async () => {
+    const res = await call('PUT', '/admin/settings', { social: { instagram: 'balaji_builders' }, marketing: { facebookPixelId: 'abc' } });
     expect(res.status).toBe(400);
     expect(res.body.error.fields['social.instagram']).toMatch(/https/);
+    expect(res.body.error.fields['marketing.facebookPixelId']).toMatch(/Pixel/);
   });
 });
 
-describe('uploads', () => {
+describe('testimonials', () => {
+  it('only published testimonials are public', async () => {
+    await call('POST', '/admin/testimonials', { name: 'Sunita', text: 'Great work on our home', published: true });
+    await call('POST', '/admin/testimonials', { name: 'Draft', text: 'Not yet approved' });
+    expect((await call('GET', '/admin/testimonials')).body.items).toHaveLength(2);
+    expect((await call('GET', '/testimonials')).body.items.map((t) => t.name)).toEqual(['Sunita']);
+  });
+});
+
+describe('uploads and password', () => {
   it('returns a signed Cloudinary upload', async () => {
-    const res = await request(app).post('/api/admin/uploads/sign').set('Cookie', cookie).send({});
-    expect(res.status).toBe(200);
+    const res = await call('POST', '/admin/uploads/sign', {});
     expect(res.body.uploadUrl).toBe('https://api.cloudinary.com/v1_1/demo/image/upload');
     expect(res.body.fields.signature).toMatch(/^[a-f0-9]{40}$/);
+  });
+
+  it('changes the password', async () => {
+    expect((await call('POST', '/auth/password', { currentPassword: 'wrong', newPassword: 'new-password-1' })).status).toBe(400);
+    expect((await call('POST', '/auth/password', { currentPassword: 'correct-horse', newPassword: 'new-password-1' })).status).toBe(204);
+    const saved = cookie;
+    cookie = undefined;
+    expect((await call('POST', '/auth/login', { email: 'owner@example.com', password: 'correct-horse' })).status).toBe(401);
+    expect((await call('POST', '/auth/login', { email: 'owner@example.com', password: 'new-password-1' })).status).toBe(200);
+    cookie = saved;
   });
 });

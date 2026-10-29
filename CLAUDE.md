@@ -13,20 +13,18 @@ If the code and the docs disagree, stop and ask; do not silently change the cont
 
 ## Stack
 
-Node.js 20+ (ES modules), Express, Mongoose (MongoDB Atlas), Zod for validation, Vitest + Supertest for tests.
+Cloudflare Workers + Hono (Express-style routing), D1 (SQLite) database, Zod for validation, Web Crypto for passwords and Cloudinary signing, Vitest against a local D1 via Wrangler's `getPlatformProxy`.
 
 ## Layout
 
 ```
 src/
-  app.js          # createApp(): middleware + routes, no DB connect (testable)
-  server.js       # connects MongoDB, starts the server
-  config/env.js   # validated environment variables
-  models/         # Mongoose models, one per file
-  routes/         # one router per resource (public and admin split)
-  middleware/     # auth, validation, errors
-  services/       # Cloudinary, email
-tests/            # *.test.js
+  index.js      # Hono app: all routes, auth, error shape
+  db.js         # D1 schema (auto-created) and queries; records = columns + JSON `data`
+  schemas.js    # Zod input schemas
+  crypto.js     # PBKDF2 passwords, Cloudinary signature
+  constants.js
+tests/          # end-to-end tests on a local D1
 ```
 
 ## Rules
@@ -35,5 +33,6 @@ tests/            # *.test.js
 - Every route validates input with Zod and returns the error shape from the contract.
 - Admin routes go through the auth middleware; no exceptions.
 - Every new route gets a test. `npm run lint && npm test` must pass before a PR.
-- Never commit `.env` or secrets.
+- Never commit `.dev.vars` or secrets.
+- Keep CPU per request small (Workers free plan): no heavy loops, use Web Crypto.
 - One task per branch (`p2-1-project-routes`) and pull request; reference the task ID.
